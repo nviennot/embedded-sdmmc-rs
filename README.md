@@ -1,5 +1,7 @@
 # Embedded SD/MMC [![crates.io](https://img.shields.io/crates/v/embedded-sdmmc.svg)](https://crates.io/crates/embedded-sdmmc) [![Documentation](https://docs.rs/embedded-sdmmc/badge.svg)](https://docs.rs/embedded-sdmmc)
 
+# This provides an async API for FAT file systems
+
 This crate is intended to allow you to read/write files on a FAT formatted SD
 card on your Rust Embedded device, as easily as using the `SdFat` Arduino
 library. It is written in pure-Rust, is `#![no_std]` and does not use `alloc`

@@ -8,6 +8,7 @@
 use super::sdmmc_proto::*;
 use super::{Block, BlockCount, BlockDevice, BlockIdx};
 use core::cell::RefCell;
+use core::future::Future;
 
 #[cfg(feature = "log")]
 use log::{debug, trace, warn};
@@ -487,66 +488,75 @@ where
 {
     type Error = Error;
 
+    type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), Self::Error>> + 'a;
+
+    /// The future returned for a write opration.
+    type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), Self::Error>> + 'a;
+
     /// Read one or more blocks, starting at the given block index.
-    fn read(
-        &self,
-        blocks: &mut [Block],
+    fn read<'a>(
+        &'a self,
+        blocks: &'a mut [Block],
         start_block_idx: BlockIdx,
         _reason: &str,
-    ) -> Result<(), Self::Error> {
-        let start_idx = match self.0.card_type {
-            CardType::SD1 | CardType::SD2 => start_block_idx.0 * 512,
-            CardType::SDHC => start_block_idx.0,
-        };
-        self.0.with_chip_select(|s| {
-            if blocks.len() == 1 {
-                // Start a single-block read
-                s.card_command(CMD17, start_idx)?;
-                self.read_data(&mut blocks[0].contents)?;
-            } else {
-                // Start a multi-block read
-                s.card_command(CMD18, start_idx)?;
-                for block in blocks.iter_mut() {
-                    self.read_data(&mut block.contents)?;
+    ) -> Self::ReadFuture<'a> {
+        async move {
+            let start_idx = match self.0.card_type {
+                CardType::SD1 | CardType::SD2 => start_block_idx.0 * 512,
+                CardType::SDHC => start_block_idx.0,
+            };
+            self.0.with_chip_select(|s| {
+                if blocks.len() == 1 {
+                    // Start a single-block read
+                    s.card_command(CMD17, start_idx)?;
+                    self.read_data(&mut blocks[0].contents)?;
+                } else {
+                    // Start a multi-block read
+                    s.card_command(CMD18, start_idx)?;
+                    for block in blocks.iter_mut() {
+                        self.read_data(&mut block.contents)?;
+                    }
+                    // Stop the read
+                    s.card_command(CMD12, 0)?;
                 }
-                // Stop the read
-                s.card_command(CMD12, 0)?;
-            }
-            Ok(())
-        })
+                Ok(())
+            })
+        }
     }
 
     /// Write one or more blocks, starting at the given block index.
-    fn write(&self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
-        let start_idx = match self.0.card_type {
-            CardType::SD1 | CardType::SD2 => start_block_idx.0 * 512,
-            CardType::SDHC => start_block_idx.0,
-        };
-        self.0.with_chip_select_mut(|s| {
-            if blocks.len() == 1 {
-                // Start a single-block write
-                s.card_command(CMD24, start_idx)?;
-                self.write_data(DATA_START_BLOCK, &blocks[0].contents)?;
-                s.wait_not_busy()?;
-                if s.card_command(CMD13, 0)? != 0x00 {
-                    return Err(Error::WriteError);
-                }
-                if s.receive()? != 0x00 {
-                    return Err(Error::WriteError);
-                }
-            } else {
-                // Start a multi-block write
-                s.card_command(CMD25, start_idx)?;
-                for block in blocks.iter() {
+    fn write<'a>(&'a self, blocks: &'a [Block], start_block_idx: BlockIdx) -> Self::WriteFuture<'a> {
+        async move {
+            let start_idx = match self.0.card_type {
+                CardType::SD1 | CardType::SD2 => start_block_idx.0 * 512,
+                CardType::SDHC => start_block_idx.0,
+            };
+            self.0.with_chip_select_mut(|s| {
+                if blocks.len() == 1 {
+                    // Start a single-block write
+                    s.card_command(CMD24, start_idx)?;
+                    self.write_data(DATA_START_BLOCK, &blocks[0].contents)?;
                     s.wait_not_busy()?;
-                    self.write_data(WRITE_MULTIPLE_TOKEN, &block.contents)?;
+                    if s.card_command(CMD13, 0)? != 0x00 {
+                        return Err(Error::WriteError);
+                    }
+                    if s.receive()? != 0x00 {
+                        return Err(Error::WriteError);
+                    }
+                } else {
+                    // Start a multi-block write
+                    s.card_command(CMD25, start_idx)?;
+                    for block in blocks.iter() {
+                        s.wait_not_busy()?;
+                        self.write_data(WRITE_MULTIPLE_TOKEN, &block.contents)?;
+                    }
+                    // Stop the write
+                    s.wait_not_busy()?;
+                    s.send(STOP_TRAN_TOKEN)?;
                 }
-                // Stop the write
-                s.wait_not_busy()?;
-                s.send(STOP_TRAN_TOKEN)?;
-            }
-            Ok(())
-        })
+                Ok(())
+            })
+        }
     }
 
     /// Determine how many blocks this device can hold.
