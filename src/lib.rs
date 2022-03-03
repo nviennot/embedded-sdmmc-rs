@@ -657,7 +657,8 @@ where
         // If we need to find the next cluster, walk the FAT.
         let mut space = buffer.len();
         let mut read = 0;
-        while space > 0 && !file.eof() {
+        let large_buffer = buffer.len() >= Block::LEN;
+        while space > 0 && !file.eof() && (!large_buffer || space >= Block::LEN) {
             let (block_idx, block_offset, block_avail) =
                 self.find_data_on_disk(volume, &mut file.current_cluster, file.current_offset).await?;
             let mut blocks = [Block::new()];
